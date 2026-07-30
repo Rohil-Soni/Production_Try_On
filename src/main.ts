@@ -7,6 +7,7 @@ import { createARPipeline } from './ar-pipeline.ts';
 import { GlassesFitter } from './GlassesFitter';
 import { computeFaceMeasurements } from './face-metrics';
 import { computeScaleFactors } from './computeScaleFactors';
+import { OcclusionManager } from './occlusion-manager.ts';
 
 // Get the container for the Three.js renderer
 const container = document.getElementById('renderer-container')!;
@@ -33,6 +34,13 @@ const pipeline = createARPipeline(container);
     templeLength: 145,
     nosePadGap: 12,
   };
+
+  // Initialize occlusion manager
+  const occlusionMgr = new OcclusionManager();
+  // Wait a frame for the scene to be populated, then detect parts
+  setTimeout(() => {
+    occlusionMgr.detectParts(glassesScene);
+  }, 100);
 
   // Face tracking callback
   pipeline.onFaceUpdate = async (frame: any) => {
@@ -62,6 +70,11 @@ const pipeline = createARPipeline(container);
     matrix.decompose(position, quaternion, new THREE.Vector3());
     glassesScene.position.copy(position);
     glassesScene.quaternion.copy(quaternion);
+
+    // Compute yaw from quaternion for occlusion
+    const euler = new THREE.Euler().setFromQuaternion(quaternion, 'YXZ');
+    const yawDeg = THREE.MathUtils.radToDeg(euler.y);
+    occlusionMgr.update(yawDeg);
 
     // Sync Three.js camera with 8th Wall's AR camera
     if (frame.cameraProjectionMatrix) {
