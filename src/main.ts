@@ -1,101 +1,67 @@
 // src/main.ts
-// Application entry point for the 8th Wall + Three.js glasses try-on
-
 import './style.css';
-import * as THREE from 'three';
 import { createARPipeline } from './ar-pipeline.ts';
-import { GlassesFitter } from './GlassesFitter';
-import { computeFaceMeasurements } from './face-metrics';
-import { computeScaleFactors } from './computeScaleFactors';
-import { OcclusionManager } from './occlusion-manager.ts';
 
-// Get the container for the Three.js renderer
 const container = document.getElementById('renderer-container')!;
 if (!container) {
-  throw new Error('Renderer container not found. Ensure index.html has <div id="renderer-container"></div>');
+  throw new Error('Renderer container not found.');
 }
 
-// Create the AR pipeline (handles 8th Wall initialization and face tracking)
 const pipeline = createARPipeline(container);
 
-// Load the glasses model asynchronously
-(async () => {
-  const glassesFitter = await GlassesFitter.fromURL('/models/glasses.glb');
-  const glassesScene = glassesFitter.getScene();
-  pipeline.scene.add(glassesScene);
+// Tap-to-start overlay (required for camera permission)
+const overlay = document.createElement('div');
+overlay.id = 'start-overlay';
+overlay.innerHTML = `<div style="
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.85); z-index: 9999; color: white;
+    font-family: -apple-system, sans-serif; cursor: pointer;
+  ">
+    <div style="font-size: 48px; margin-bottom: 16px;">👓</div>
+    <div style="font-size: 22px; font-weight: 600; margin-bottom: 8px;">Try On</div>
+    <div style="font-size: 14px; opacity: 0.7;">Allow camera access when prompted</div>
+  </div>`;
+document.body.appendChild(overlay);
 
-  // Define model dimensions (must match your GLB)
-  // These are in millimeters
-  const MODEL_DIMS = {
-    frameWidth: 140,
-    bridgeWidth: 18,
-    lensWidth: 52,
-    lensHeight: 40,
-    templeLength: 145,
-    nosePadGap: 12,
-  };
+let started = false;
 
-  // Initialize occlusion manager
-  const occlusionMgr = new OcclusionManager();
-  // Wait a frame for the scene to be populated, then detect parts
-  setTimeout(() => {
-    occlusionMgr.detectParts(glassesScene);
-  }, 100);
+overlay.addEventListener('click', async () => {
+  if (started) return;
+  started = true;
+  overlay.style.display = 'none';
 
-  // Face tracking callback
-  pipeline.onFaceUpdate = async (frame: any) => {
-    const pose = frame?.worldTransform;
-    const landmarks = frame?.faceData?.landmarks;
+  try {
+    await pipeline.start();
+    console.log('[App] AR session started successfully.');
+  } catch (err) {
+    console.error('[App] Failed to start AR session:', err);
+    overlay.innerHTML = `<div style="
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        background: rgba(0,0,0,0.85); z-index: 9999; color: white;
+        font-family: -apple-system, sans-serif; cursor: pointer;
+      ">
+        <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
+        <div style="font-size: 18px; margin-bottom: 8px;">Camera unavailable</div>
+        <div style="font-size: 14px; opacity: 0.7;">Tap to retry</div>
+      </div>`;
+    overlay.style.display = 'flex';
+    started = false;
 
-    if (!pose) {
-      glassesScene.visible = false;
-      return;
-    }
+    overlay.addEventListener('click', async () => {
+      if (started) return;
+      started = true;
+      overlay.style.display = 'none';
+      try {
+        await pipeline.start();
+      } catch {
+        started = false;
+        overlay.style.display = 'flex';
+      }
+    }, { once: true });
+  }
+});
 
-    glassesScene.visible = true;
-
-    // Compute face measurements from landmarks
-    const measurements = landmarks ? computeFaceMeasurements(landmarks) : null;
-
-    if (measurements) {
-      // Compute scale factors from face measurements
-      const factors = computeScaleFactors(measurements, MODEL_DIMS);
-      glassesFitter.applyScaleFactors(factors);
-    }
-
-    // Apply face pose (position + rotation)
-    const matrix = new THREE.Matrix4().fromArray(pose);
-    const position = new THREE.Vector3();
-    const quaternion = new THREE.Quaternion();
-    matrix.decompose(position, quaternion, new THREE.Vector3());
-    glassesScene.position.copy(position);
-    glassesScene.quaternion.copy(quaternion);
-
-    // Compute yaw from quaternion for occlusion
-    const euler = new THREE.Euler().setFromQuaternion(quaternion, 'YXZ');
-    const yawDeg = THREE.MathUtils.radToDeg(euler.y);
-    occlusionMgr.update(yawDeg);
-
-    // Sync Three.js camera with 8th Wall's AR camera
-    if (frame.cameraProjectionMatrix) {
-      pipeline.camera.projectionMatrix.fromArray(frame.cameraProjectionMatrix);
-    }
-    if (frame.cameraViewMatrix) {
-      pipeline.camera.matrixWorldInverse.fromArray(frame.cameraViewMatrix);
-    }
-  };
-})();
-
-// Animation loop
-function animate() {
-  requestAnimationFrame(animate);
-  pipeline.renderer.render(pipeline.scene, pipeline.camera);
-}
-animate();
-
-// Start the AR session
-pipeline.start();
-
-// Optional: expose pipeline for debugging
 (window as any).__pipeline = pipeline;
-console.log('[App] AR pipeline started. Face the camera to see the glasses.');
+console.log('[App] Ready. Tap the screen to start AR.');

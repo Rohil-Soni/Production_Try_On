@@ -6,4 +6,8 @@ export default defineConfig({
     target: 'es2020',
     assetsInlineLimit: 0,
   },
+  server: {
+    port: 5500,
+    strictPort: true,
+  },
 });

@@ -1,58 +1,94 @@
 // src/ar-pipeline.ts
-// Initializes 8th Wall AR pipeline with face tracking
+// 8th Wall AR pipeline for face tracking using Threejs pipeline module (official pattern)
 
 import * as THREE from 'three';
+import { GlassesFitter } from './GlassesFitter';
 
-// 8th Wall is loaded globally via CDN script tag
-declare const XR8: any;
+// 8th Wall's ThreeJS pipeline module requires THREE to be a global (window.THREE).
+window.THREE = THREE;
 
-// Pipeline modules needed for face-tracking AR
-const FACE_PIPELINE_MODULES = [
-  XR8.GlTextureRenderer(),     // Renders camera feed to a WebGL texture
-  XR8.DeviceController(),      // Handles device orientation / motion
-  XR8.CameraPipelineModule(),  // Core camera pipeline
-  XR8.FaceController({         // Face tracking
-    maxFaces: 1,
-    enableLandmarks: true,     // 468 face landmarks (same indices as MediaPipe)
-  }),
-];
+const ENGINE_URL = 'https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js';
+
+declare global {
+  interface Window {
+    XR8: any;
+    THREE: typeof THREE;
+    XRExtras: any;
+  }
+}
+
+let xr8ReadyPromise: Promise<any> | null = null;
+
+function ensureXR8Loaded(): Promise<any> {
+  if (xr8ReadyPromise) return xr8ReadyPromise;
+
+  xr8ReadyPromise = new Promise((resolve, reject) => {
+    if (window.XR8 !== undefined) {
+      resolve(window.XR8);
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = ENGINE_URL;
+    script.async = true;
+    script.setAttribute('data-preload-chunks', 'slam,face');
+    script.crossOrigin = 'anonymous';
+
+    script.onload = () => {
+      const startTime = Date.now();
+      const poll = () => {
+        if (window.XR8 !== undefined) {
+          console.log('[ARPipeline] XR8 engine ready in', Date.now() - startTime, 'ms');
+          resolve(window.XR8);
+          return;
+        }
+        if (Date.now() - startTime > 30000) {
+          reject(new Error('8th Wall engine did not initialize within timeout'));
+          return;
+        }
+        setTimeout(poll, 200);
+      };
+      try {
+        poll();
+      } catch (e) {
+        reject(e);
+      }
+    };
+
+    script.onerror = () => {
+      reject(new Error('Failed to load 8th Wall engine binary from CDN'));
+    };
+
+    document.head.appendChild(script);
+  });
+
+  return xr8ReadyPromise;
+}
 
 export interface ARPipeline {
-  scene: THREE.Scene;
-  camera: THREE.PerspectiveCamera;
-  renderer: THREE.WebGLRenderer;
-  /** Callback fired every frame with face tracking data */
+  scene: THREE.Scene | null;
+  camera: THREE.PerspectiveCamera | null;
+  renderer: THREE.WebGLRenderer | null;
   onFaceUpdate: ((frame: any) => void) | null;
-  /** Start the AR session (requires app key) */
-  start: () => void;
-  /** Stop the AR session */
+  start: () => Promise<void>;
   stop: () => void;
 }
 
 export function createARPipeline(container: HTMLElement): ARPipeline {
-  // ---- Three.js Renderer ----
-  const renderer = new THREE.WebGLRenderer({
-    antialias: true,
-    alpha: true,              // Transparent background (camera shows through)
-    powerPreference: 'high-performance',
-  });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(container.clientWidth, container.clientHeight);
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  container.appendChild(renderer.domElement);
+  // Create a canvas for the AR view and append it to the container
+  const canvas = document.createElement('canvas');
+  canvas.id = 'camerafeed'; // must match the name expected by XR8 pipeline modules
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  canvas.style.display = 'block';
+  container.appendChild(canvas);
 
-  // ---- Scene & Camera ----
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(
-    45,
-    container.clientWidth / container.clientHeight,
-    0.1,
-    1000,
-  );
+  let scene: THREE.Scene | null = null;
+  let camera: THREE.PerspectiveCamera | null = null;
+  let glassesScene: THREE.Group | null = null;
+  let renderer: THREE.WebGLRenderer | null = null;
 
-  let running = false;
+  let startedInternally = false; // Internal flag for AR session state
 
   const api: ARPipeline = {
     scene,
@@ -60,45 +96,135 @@ export function createARPipeline(container: HTMLElement): ARPipeline {
     renderer,
     onFaceUpdate: null,
 
-    start() {
-      if (running) return;
-      console.log('[ARPipeline] Starting 8th Wall session...');
+    async start() {
+      if (startedInternally) return Promise.resolve();
+      startedInternally = true; // Mark as started immediately
 
-      XR8.run({
-        appKey: 'YOUR_APP_KEY',       // Replace with actual key for production
-        modules: FACE_PIPELINE_MODULES,
-        onReady: () => {
-          running = true;
-          console.log('[ARPipeline] 8th Wall session ready.');
-        },
-      });
+      console.log('[ARPipeline] Loading 8th Wall engine...');
 
-      // Hook into per-frame update to extract face pose
-      XR8.addCameraPipelineModule({
-        name: 'glasses-renderer',
-        onUpdate: ({ frame }: { frame: any }) => {
-          if (api.onFaceUpdate) {
-            api.onFaceUpdate(frame);
+      const XR8 = await ensureXR8Loaded();
+      console.log('[ARPipeline] Engine loaded.');
+
+      // Build the modules array for XR8.run()
+      const modules: any[] = [];
+
+      // GlTextureRenderer module (renders camera feed to texture)
+      if (XR8.GlTextureRenderer?.pipelineModule) {
+        modules.push(XR8.GlTextureRenderer.pipelineModule());
+        console.log('[ARPipeline] Added GlTextureRenderer.pipelineModule');
+      }
+
+      // XrController module (provides tracking and camera pose)
+      if (XR8.XrController?.pipelineModule) {
+        modules.push(XR8.XrController.pipelineModule());
+        console.log('[ARPipeline] Added XrController.pipelineModule');
+      }
+
+      // Threejs module (integrates with Three.js rendering)
+      if (XR8.Threejs?.pipelineModule) {
+        modules.push(XR8.Threejs.pipelineModule());
+        console.log('[ARPipeline] Added Threejs.pipelineModule');
+      }
+
+      // XRExtras modules (from the official example)
+      const XRExtras = (window as any).XRExtras; // Access XRExtras from window
+      if (XRExtras?.Loading?.pipelineModule) {
+        modules.push(XRExtras.Loading.pipelineModule());
+        console.log('[ARPipeline] Added XRExtras.Loading.pipelineModule');
+      }
+
+      if (XRExtras?.AlmostThere?.pipelineModule) {
+        modules.push(XRExtras.AlmostThere.pipelineModule());
+        console.log('[ARPipeline] Added XRExtras.AlmostThere.pipelineModule');
+      }
+
+      if (XRExtras?.RuntimeError?.pipelineModule) {
+        modules.push(XRExtras.RuntimeError.pipelineModule());
+        console.log('[ARPipeline] Added XRExtras.RuntimeError.pipelineModule');
+      }
+
+      // Our custom module for loading the glasses model and updating it based on face measurements
+      modules.push({
+        name: 'glasses-updater',
+        onStart: () => {
+          console.log('[ARPipeline] Custom module onStart — session is ready');
+
+          const threejsResult = XR8.Threejs.xrScene();
+          if (threejsResult && threejsResult.scene && threejsResult.camera && threejsResult.renderer) {
+            scene = threejsResult.scene;
+            camera = threejsResult.camera;
+            renderer = threejsResult.renderer;
+
+            // Make the three.js renderer's clear color fully transparent
+            renderer!.setClearColor(0x000000, 0); // black, fully transparent
+            api.renderer = renderer;
+
+            console.log('[ARPipeline] Got Three.js scene, camera, and renderer');
+
+            // Add a debug cube to verify Three.js rendering
+            const geometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+            const material = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Bright red
+            const cube = new THREE.Mesh(geometry, material);
+            if (scene) {
+              scene.add(cube); // scene is definitely not null here
+            }
+          } else {
+            console.error('[ARPipeline] Failed to get Three.js scene, camera, or renderer');
+            startedInternally = false; // Mark as failed to start
           }
+
+          // Load the glasses model and add it to the scene
+          (async () => {
+            try {
+              const glassesFitter = await GlassesFitter.fromURL('/models/glasses.glb');
+              glassesScene = glassesFitter.getScene();
+              if (glassesScene && scene) {
+                scene.add(glassesScene);
+                console.log('[ARPipeline] Glasses model added to scene');
+              } else {
+                console.error('[ARPipeline] Failed to load or add glasses model');
+              }
+            } catch (err) {
+              console.error('[ARPipeline] Failed to load glasses model:', err);
+            }
+          })();
+        },
+        onUpdate: (_frame: any) => {
+          // This will be called on every AR frame
+          // Future: Update glasses position/rotation based on face tracking data
         },
       });
+
+      console.log('[ARPipeline] Using pipeline modules:', modules.map(m => m.name || 'unnamed').join(', '));
+
+      // Register modules BEFORE calling run()
+      XR8.addCameraPipelineModules(modules);
+
+      // Required for desktop webcam / front camera use — SLAM only works on mobile back camera
+      XR8.XrController.configure({ disableWorldTracking: true });
+
+      // Run the engine (XR8.run does not take onReady/onError callbacks in current API)
+      XR8.run({
+        canvas: document.getElementById('camerafeed'),
+        cameraConfig: { direction: XR8.XrConfig.camera().FRONT },
+        allowedDevices: XR8.XrConfig.device().ANY,
+      });
+
+      return Promise.resolve(); // Resolves immediately; actual startup is async
     },
 
     stop() {
-      if (!running) return;
-      XR8.stop();
-      running = false;
-      console.log('[ARPipeline] Session stopped.');
+      if (!startedInternally) return;
+      if (window.XR8?.stop) window.XR8.stop();
+      startedInternally = false;
     },
   };
 
-  // Handle window resize
   window.addEventListener('resize', () => {
     const w = container.clientWidth;
     const h = container.clientHeight;
-    renderer.setSize(w, h);
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
+    if (renderer) renderer.setSize(w, h);
+    if (camera) { camera.aspect = w / h; camera.updateProjectionMatrix(); }
   });
 
   return api;

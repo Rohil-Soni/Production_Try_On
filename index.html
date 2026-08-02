@@ -7,19 +7,16 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
-    #renderer-container { width: 100%; height: 100%; }
+    #renderer-container { width: 100%; height: 100%; display: block; }
+    .xr-loading, .xr-error, .xr-almost-there {
+      font-family: system-ui, sans-serif !important;
+    }
   </style>
+  <!-- XR Extras (loading screen, error handling) -->
+  <script src="//cdn.8thwall.com/web/xrextras/xrextras.js"></script>
 </head>
 <body>
   <div id="renderer-container"></div>
-  <!-- 8th Wall Engine binary (open source, CDN-loaded) -->
-  <script
-    src="https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js"
-    async
-    crossorigin="anonymous"
-    data-preload-chunks="slam,face"
-  ></script>
-  <!-- Our app entry point -->
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

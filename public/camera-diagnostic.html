@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head><meta charset="UTF-8"><title>Camera Diagnostic</title></head>
+<body style="margin:0; background:#111; color:#fff; font-family:sans-serif; padding:2rem;">
+<h1>Camera Permission Diagnostic</h1>
+<button id="test-btn" style="padding:1rem 2rem;font-size:1.2rem;cursor:pointer;">
+  Test Camera Permission
+</button>
+<pre id="output" style="margin-top:1rem; color:#0f0;"></pre>
+<script>
+const out = document.getElementById('output');
+function log(msg) { out.textContent += msg + '\n'; console.log(msg); }
+document.getElementById('test-btn').addEventListener('click', async () => {
+  out.textContent = '';
+  log('=== Camera test started ===');
+  log('1. Checking if getUserMedia is available...');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    log('FAIL: getUserMedia not available. Are you on HTTPS or localhost?');
+    log('Current URL protocol: ' + window.location.protocol);
+    log('Current hostname: ' + window.location.hostname);
+    return;
+  }
+  log('OK: getUserMedia is available');
+  log('2. Calling getUserMedia({video: true})...');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({video: true});
+    log('SUCCESS! Camera stream obtained.');
+    log('   Track count: ' + stream.getTracks().length);
+    log('   Track label: ' + stream.getVideoTracks()[0].label);
+    // Show the video in a small element
+    const video = document.createElement('video');
+    video.srcObject = stream;
+    video.autoplay = true;
+    video.style = 'width:320px;margin-top:1rem;border:2px solid #0f0;';
+    document.body.appendChild(video);
+    log('3. Video element attached — you should see preview');
+    // Stop tracks after 5 seconds
+    setTimeout(() => {
+      stream.getTracks().forEach(t => t.stop());
+      log('4. Camera stream stopped.');
+    }, 5000);
+  } catch (err) {
+    log('FAILED: ' + err.name + ' - ' + err.message);
+    log('Error object: ' + JSON.stringify(err, Object.getOwnPropertyNames(err)));
+    if (err.name === 'NotAllowedError') {
+      log('\n=== SOLUTION ===');
+      log('Camera permission has been BLOCKED for this site.');
+      log('Click the padlock icon in the address bar → Site Settings → Camera → "Ask (default)"');
+      log('Also try: Opening a private/incognito window and testing there.');
+    } else if (err.name === 'NotFoundError') {
+      log('No camera device found on this system.');
+    } else if (err.name === 'NotReadableError') {
+      log('Camera is busy with another app/tab. Close all other apps and tabs using the camera.');
+    }
+  }
+});
+</script>
+</body>
+</html>
