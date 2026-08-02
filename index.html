@@ -12,6 +12,16 @@
       font-family: system-ui, sans-serif !important;
     }
   </style>
+  <style>
+    /* Pre-declare the font locally so the browser uses our copy instead of
+       fetching 8th Wall's CDN font (suppresses font 404/network errors) */
+    @font-face {
+      font-family: 'Nunito-SemiBold';
+      src: url('/fonts/Nunito-SemiBold.woff') format('woff');
+      font-weight: 400;
+      font-style: normal;
+    }
+  </style>
   <!-- XR Extras (loading screen, error handling) -->
   <script src="//cdn.8thwall.com/web/xrextras/xrextras.js"></script>
 </head>
