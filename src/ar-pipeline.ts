@@ -4,9 +4,6 @@
 import * as THREE from 'three';
 import { GlassesFitter } from './GlassesFitter';
 
-// 8th Wall's ThreeJS pipeline module requires THREE to be a global (window.THREE).
-window.THREE = THREE;
-
 const ENGINE_URL = 'https://cdn.jsdelivr.net/npm/@8thwall/engine-binary@1/dist/xr.js';
 
 declare global {
@@ -16,6 +13,9 @@ declare global {
     XRExtras: any;
   }
 }
+
+// 8th Wall's ThreeJS pipeline module requires THREE to be a global (window.THREE).
+window.THREE = THREE;
 
 let xr8ReadyPromise: Promise<any> | null = null;
 
@@ -89,6 +89,11 @@ export function createARPipeline(container: HTMLElement): ARPipeline {
   let renderer: THREE.WebGLRenderer | null = null;
 
   let startedInternally = false; // Internal flag for AR session state
+  let hasLoggedFirstResult = false; // Flag to log first face result only once
+
+  // Tuning constants – adjust to fit your glasses model on the face
+  const tempOffset = new THREE.Vector3(0, 0.01, 0.02); // (x: left/right, y: up/down, z: forward/back) in meters
+  const tempScale = new THREE.Vector3(0.9, 0.9, 0.9);   // uniform scale multiplier (1.0 = original size)
 
   const api: ARPipeline = {
     scene,
@@ -97,13 +102,27 @@ export function createARPipeline(container: HTMLElement): ARPipeline {
     onFaceUpdate: null,
 
     async start() {
-      if (startedInternally) return Promise.resolve();
+      if (startedInternally) return;
       startedInternally = true; // Mark as started immediately
 
       console.log('[ARPipeline] Loading 8th Wall engine...');
 
       const XR8 = await ensureXR8Loaded();
       console.log('[ARPipeline] Engine loaded.');
+
+      // Configure FaceController BEFORE building/adding pipeline modules
+      if (XR8.FaceController?.configure) {
+        XR8.FaceController.configure({
+          meshGeometry: [
+            XR8.FaceController.MeshGeometry.FACE,
+            XR8.FaceController.MeshGeometry.EYES,
+            XR8.FaceController.MeshGeometry.MOUTH,
+          ],
+          coordinates: { axes: 'RIGHT_HANDED', mirroredDisplay: true },
+          maxDetections: 1,
+        });
+        console.log('[ARPipeline] FaceController configured.');
+      }
 
       // Build the modules array for XR8.run()
       const modules: any[] = [];
@@ -122,6 +141,8 @@ export function createARPipeline(container: HTMLElement): ARPipeline {
 
       // Threejs module (integrates with Three.js rendering)
       if (XR8.Threejs?.pipelineModule) {
+        // Ensure THREE is set as global for the Threejs pipeline module
+        window.THREE = THREE;
         modules.push(XR8.Threejs.pipelineModule());
         console.log('[ARPipeline] Added Threejs.pipelineModule');
       }
@@ -154,86 +175,142 @@ export function createARPipeline(container: HTMLElement): ARPipeline {
 
           const threejsResult = XR8.Threejs.xrScene();
           if (threejsResult && threejsResult.scene && threejsResult.camera && threejsResult.renderer) {
-            scene = threejsResult.scene;
-            camera = threejsResult.camera;
-            renderer = threejsResult.renderer;
+            // Keep non-null local references for use in this callback (TS narrowing is lost on
+            // captured `let` variables, e.g. `scene` below).
+            const activeScene = threejsResult.scene;
+            const activeCamera = threejsResult.camera;
+            const activeRenderer = threejsResult.renderer;
 
-            // Make the three.js renderer's clear color fully transparent
-            renderer!.setClearColor(0x000000, 0); // black, fully transparent
+            scene = activeScene;
+            camera = activeCamera;
+            renderer = activeRenderer;
+
             api.renderer = renderer;
 
             console.log('[ARPipeline] Got Three.js scene, camera, and renderer');
 
-      // Add a debug cube to verify Three.js rendering
-      // const geometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
-      // const material = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Bright red
-      // const cube = new THREE.Mesh(geometry, material);
-      // if (scene) {
-      //   scene.add(cube); // scene is definitely not null here
-      // }
+            // DEBUG: green sphere at (0,0,-0.5) — if visible, Three.js compositing works
+            const debugSphere = new THREE.Mesh(
+              new THREE.SphereGeometry(0.05, 16, 16),
+              new THREE.MeshBasicMaterial({ color: 0x00ff00 })
+            );
+            debugSphere.position.set(0, 0, -0.5);
+            activeScene.add(debugSphere);
+            console.log('[ARPipeline] Debug sphere added.');
+
+            // Load the glasses model and add it to the scene
+            (async () => {
+              try {
+                const glassesFitter = await GlassesFitter.fromURL('/models/glasses1.glb');
+                glassesScene = glassesFitter.getScene();
+                if (glassesScene && activeScene) {
+                  // Apply temporary offset/scale for quick tuning (adjust as needed)
+                  glassesScene.position.add(tempOffset);
+                  glassesScene.scale.multiply(tempScale);
+                  activeScene.add(glassesScene);
+                  console.log('[ARPipeline] Glasses model added to scene');
+                } else {
+                  console.error('[ARPipeline] Failed to load or add glasses model');
+                }
+              } catch (err) {
+                console.error('[ARPipeline] Failed to load glasses model:', err);
+              }
+            })();
           } else {
             console.error('[ARPipeline] Failed to get Three.js scene, camera, or renderer');
             startedInternally = false; // Mark as failed to start
           }
-
-          // Load the glasses model and add it to the scene
-          (async () => {
-            try {
-              const glassesFitter = await GlassesFitter.fromURL('/models/glasses.glb');
-              glassesScene = glassesFitter.getScene();
-               if (glassesScene && scene) {
-                 scene.add(glassesScene);
-                 console.log('[ARPipeline] Glasses model added to scene');
-               } else {
-                 console.error('[ARPipeline] Failed to load or add glasses model');
-               }
-            } catch (err) {
-              console.error('[ARPipeline] Failed to load glasses model:', err);
-            }
-          })();
         },
         onUpdate: (frame: any) => {
           const faceResult = frame?.processCpuResult?.facecontroller;
-          if (!faceResult || !glassesScene) return;
+          if (!faceResult) return;
 
-          // attachmentPoints.attachment is the nose bridge — perfect anchor for glasses
-          const attachment = faceResult.attachmentPoints?.attachment;
+          // TEMP DEBUG: confirm the theory — log the full faceResult once.
+          // If it only has cameraFeedTexture, intrinsics, position {0,0,0},
+          // rotation {0,0,0,w:-1} and nothing else — the detector is running
+          // but finding no face.
+          if (!hasLoggedFirstResult) {
+            console.log('[Face] full faceResult:', JSON.stringify(faceResult));
+            hasLoggedFirstResult = true;
+          }
+
+          if (!glassesScene) return;
+
+          // attachmentPoints.noseBridge is the nose bridge — perfect anchor for glasses
+          const attachment = faceResult.attachmentPoints?.noseBridge;
           if (!attachment) return;
 
-          const { position, rotation, scale } = attachment;
-          if (position) glassesScene.position.set(position.x, position.y, position.z);
-          if (rotation) glassesScene.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
-          if (scale)    glassesScene.scale.set(scale.x, scale.y, scale.z);
+          // Apply face transform (position + rotation)
+          if (attachment.position) {
+            // Convert face rotation to THREE.Quaternion
+            const faceQuat = new THREE.Quaternion(
+              faceResult.rotation.x,
+              faceResult.rotation.y,
+              faceResult.rotation.z,
+              faceResult.rotation.w
+            );
+            // Offset in face local space
+            const offset = new THREE.Vector3(
+              attachment.position.x,
+              attachment.position.y,
+              attachment.position.z
+            );
+            // Rotate offset into world space
+            offset.applyQuaternion(faceQuat);
+            // World position = face position + rotated offset
+            glassesScene.position.set(
+              faceResult.position.x + offset.x,
+              faceResult.position.y + offset.y,
+              faceResult.position.z + offset.z
+            );
+          }
+
+          if (faceResult.rotation) {
+            glassesScene.quaternion.set(
+              faceResult.rotation.x,
+              faceResult.rotation.y,
+              faceResult.rotation.z,
+              faceResult.rotation.w
+            );
+          }
+
+          // Apply scale tuning (attachment.scale may not be provided; fallback to tempScale)
+          if (attachment.scale) {
+            glassesScene.scale.copy(attachment.scale).multiply(tempScale);
+          } else {
+            // If attachment scale not provided, just use the tuning scale
+            glassesScene.scale.copy(tempScale);
+          }
+
+          // Throttled diagnostic: confirm tracking data is live and changing.
+          // Remove once the glasses track correctly.
+          if (frame.timestamp % 60 === 0) {
+            const p = glassesScene.position;
+            console.log('[Face] live pos:', p.x.toFixed(3), p.y.toFixed(3), p.z.toFixed(3));
+          }
         },
       });
 
       console.log('[ARPipeline] Using pipeline modules:', modules.map(m => m.name || 'unnamed').join(', '));
 
-      // Configure FaceController to provide attachment points for accurate face tracking
-      if (XR8.FaceController?.configure) {
-        XR8.FaceController.configure({
-          meshGeometry: [
-            XR8.FaceController.MeshGeometry.FACE,
-            XR8.FaceController.MeshGeometry.EYES,
-            XR8.FaceController.MeshGeometry.MOUTH,
-          ],
-          coordinates: { axes: 'RIGHT_HANDED', mirroredDisplay: true },
-          maxDetections: 1,
-        });
-        console.log('[ARPipeline] Configured FaceController for attachment points');
-      }
-
       // Register modules BEFORE calling run()
       XR8.addCameraPipelineModules(modules);
 
       // Run the engine (XR8.run does not take onReady/onError callbacks in current API)
+      // Use XrDevice.ANY for allowed devices (desktop + mobile)
       XR8.run({
         canvas: document.getElementById('camerafeed'),
-        cameraConfig: { direction: XR8.XrConfig.camera().FRONT },
+        cameraConfig: {
+          direction: XR8.XrConfig.camera().FRONT,
+          width: 640,
+          height: 480,
+        },
         allowedDevices: XR8.XrConfig.device().ANY,
       });
 
-      return Promise.resolve(); // Resolves immediately; actual startup is async
+      // The actual start signal comes from the custom module's onStart.
+      // We return immediately; the caller can treat the start as fire-and-forget.
+      return;
     },
 
     stop() {
@@ -246,7 +323,9 @@ export function createARPipeline(container: HTMLElement): ARPipeline {
   window.addEventListener('resize', () => {
     const w = container.clientWidth;
     const h = container.clientHeight;
+    // Update the renderer size
     if (renderer) renderer.setSize(w, h);
+    // Update the camera aspect ratio if camera is available
     if (camera) { camera.aspect = w / h; camera.updateProjectionMatrix(); }
   });
 
