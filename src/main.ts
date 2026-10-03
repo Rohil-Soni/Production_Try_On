@@ -1,67 +1,79 @@
 // src/main.ts
 import './style.css';
-import { createARPipeline } from './ar-pipeline.ts';
+import { MediaPipeFaceMesh } from './mediaPipeFaceMesh';
+import { GlassesTryOn } from './glasses-try-on';
+import { DebugOverlay } from './debug-overlay';
 
-const container = document.getElementById('renderer-container')!;
-if (!container) {
-  throw new Error('Renderer container not found.');
+const videoElement = document.getElementById('video') as HTMLVideoElement;
+const overlayContainer = document.getElementById('overlay-container') as HTMLElement;
+const toggleButton = document.getElementById('toggle-camera') as HTMLButtonElement;
+
+if (!videoElement || !overlayContainer) {
+  throw new Error('Required elements not found in DOM');
 }
 
-const pipeline = createARPipeline(container);
+// Make these available globally for the toggle button
+let glassesTryOn: GlassesTryOn | null = null;
+let mediaPipe: MediaPipeFaceMesh | null = null;
+let debugOverlay: DebugOverlay | null = null;
 
-// Tap-to-start overlay (required for camera permission)
-const overlay = document.createElement('div');
-overlay.id = 'start-overlay';
-overlay.innerHTML = `<div style="
-    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    background: rgba(0,0,0,0.85); z-index: 9999; color: white;
-    font-family: -apple-system, sans-serif; cursor: pointer;
-  ">
-    <div style="font-size: 48px; margin-bottom: 16px;">👓</div>
-    <div style="font-size: 22px; font-weight: 600; margin-bottom: 8px;">Try On</div>
-    <div style="font-size: 14px; opacity: 0.7;">Allow camera access when prompted</div>
-  </div>`;
-document.body.appendChild(overlay);
+// Wait for DOM to be ready
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('DOM loaded, initializing...');
 
-let started = false;
+  // Create debug overlay
+  debugOverlay = new DebugOverlay(overlayContainer);
 
-overlay.addEventListener('click', async () => {
-  if (started) return;
-  started = true;
-  overlay.style.display = 'none';
+  // Set up video size watcher
+  videoElement.addEventListener('loadedmetadata', () => {
+    if (debugOverlay) {
+      debugOverlay.setVideoSize(videoElement.videoWidth || 640, videoElement.videoHeight || 480);
+    }
+  });
 
-  try {
-    await pipeline.start();
-    console.log('[App] AR session started successfully.');
-  } catch (err) {
-    console.error('[App] Failed to start AR session:', err);
-    overlay.innerHTML = `<div style="
-        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-        display: flex; flex-direction: column; align-items: center; justify-content: center;
-        background: rgba(0,0,0,0.85); z-index: 9999; color: white;
-        font-family: -apple-system, sans-serif; cursor: pointer;
-      ">
-        <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
-        <div style="font-size: 18px; margin-bottom: 8px;">Camera unavailable</div>
-        <div style="font-size: 14px; opacity: 0.7;">Tap to retry</div>
-      </div>`;
-    overlay.style.display = 'flex';
-    started = false;
-
-    overlay.addEventListener('click', async () => {
-      if (started) return;
-      started = true;
-      overlay.style.display = 'none';
-      try {
-        await pipeline.start();
-      } catch {
-        started = false;
-        overlay.style.display = 'flex';
+  // Instantiate MediaPipe Face Mesh
+  mediaPipe = new MediaPipeFaceMesh(videoElement, {
+    filterUrl: '/models/glasses1.glb',
+    onReady: () => {
+      console.log('MediaPipe Face Mesh ready');
+      // Start glasses try-on once MediaPipe is ready
+      glassesTryOn = new GlassesTryOn({
+        videoElement: videoElement,
+        container: overlayContainer,
+        modelUrl: '/models/glasses1.glb',
+        onReady: () => {
+          console.log('Glasses Try-On ready');
+          glassesTryOn?.start();
+        },
+        onError: (err) => {
+          console.error('Error initializing Glasses Try-On:', err);
+        }
+      });
+    },
+    onError: (err) => {
+      console.error('Error initializing MediaPipe Face Mesh:', err);
+    },
+    onLandmarksDetected: (landmarks) => {
+      console.log('[main] Landmarks detected:', landmarks.length);
+      // Update debug overlay
+      if (debugOverlay) {
+        debugOverlay.drawLandmarks(landmarks);
       }
-    }, { once: true });
+    }
+  });
+
+  // Toggle camera button
+  if (toggleButton) {
+    toggleButton.addEventListener('click', () => {
+      if (glassesTryOn && mediaPipe) {
+        if (mediaPipe.isRunning()) {
+          glassesTryOn.stop();
+          toggleButton.textContent = 'Start Camera';
+        } else {
+          glassesTryOn.start();
+          toggleButton.textContent = 'Stop Camera';
+        }
+      }
+    });
   }
 });
-
-(window as any).__pipeline = pipeline;
-console.log('[App] Ready. Tap the screen to start AR.');

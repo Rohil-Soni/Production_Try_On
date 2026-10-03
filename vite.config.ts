@@ -7,8 +7,10 @@ export default defineConfig({
     assetsInlineLimit: 0,
   },
   server: {
+    host: '0.0.0.0',
     port: 5500,
     strictPort: true,
+    allowedHosts: ['magnifier-resigned-halves.ngrok-free.dev'],
     proxy: {
       // Intercept 8th Wall's font requests and redirect to a local copy
       '/8thwall-fonts': {

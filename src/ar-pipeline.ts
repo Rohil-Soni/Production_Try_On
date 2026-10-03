@@ -31,7 +31,7 @@ function ensureXR8Loaded(): Promise<any> {
     const script = document.createElement('script');
     script.src = ENGINE_URL;
     script.async = true;
-    script.setAttribute('data-preload-chunks', 'slam,face');
+    script.setAttribute('data-preload-chunks', 'slam,face,threejs,extras');
     script.crossOrigin = 'anonymous';
 
     script.onload = () => {
@@ -101,16 +101,16 @@ export function createARPipeline(container: HTMLElement): ARPipeline {
     renderer,
     onFaceUpdate: null,
 
-    async start() {
+    // start the AR pipeline
+    start: async () => {
       if (startedInternally) return;
-      startedInternally = true; // Mark as started immediately
+      startedInternally = true;
 
       console.log('[ARPipeline] Loading 8th Wall engine...');
-
       const XR8 = await ensureXR8Loaded();
       console.log('[ARPipeline] Engine loaded.');
 
-      // Configure FaceController BEFORE building/adding pipeline modules
+      // Configure FaceController BEFORE building pipeline modules
       if (XR8.FaceController?.configure) {
         XR8.FaceController.configure({
           meshGeometry: [
@@ -118,6 +118,8 @@ export function createARPipeline(container: HTMLElement): ARPipeline {
             XR8.FaceController.MeshGeometry.EYES,
             XR8.FaceController.MeshGeometry.MOUTH,
           ],
+          // Enable attachment points such as noseBridge, forehead, etc.
+          attachmentPoints: true,
           coordinates: { axes: 'RIGHT_HANDED', mirroredDisplay: true },
           maxDetections: 1,
         });
@@ -149,6 +151,11 @@ export function createARPipeline(container: HTMLElement): ARPipeline {
 
       // XRExtras modules (from the official example)
       const XRExtras = (window as any).XRExtras; // Access XRExtras from window
+      if (XRExtras?.FullWindowCanvas?.pipelineModule) {
+        modules.push(XRExtras.FullWindowCanvas.pipelineModule());
+        console.log('[ARPipeline] Added XRExtras.FullWindowCanvas.pipelineModule');
+      }
+
       if (XRExtras?.Loading?.pipelineModule) {
         modules.push(XRExtras.Loading.pipelineModule());
         console.log('[ARPipeline] Added XRExtras.Loading.pipelineModule');
@@ -185,6 +192,8 @@ export function createARPipeline(container: HTMLElement): ARPipeline {
             camera = activeCamera;
             renderer = activeRenderer;
 
+             api.scene = scene;
+             api.camera = camera;
             api.renderer = renderer;
 
             console.log('[ARPipeline] Got Three.js scene, camera, and renderer');
@@ -295,6 +304,13 @@ export function createARPipeline(container: HTMLElement): ARPipeline {
 
       // Register modules BEFORE calling run()
       XR8.addCameraPipelineModules(modules);
+
+      // Disable world tracking (SLAM) — required for desktop front-camera use.
+      // FaceController is mutually exclusive with XrController (SLAM/world tracking).
+      if (XR8.XrController?.configure) {
+        XR8.XrController.configure({ disableWorldTracking: true });
+        console.log('[ARPipeline] XrController configured (world tracking disabled).');
+      }
 
       // Run the engine (XR8.run does not take onReady/onError callbacks in current API)
       // Use XrDevice.ANY for allowed devices (desktop + mobile)
