@@ -1,0 +1,4 @@
+# MediaPipe Face Mesh AR Filter - Prototype Dependencies
+mediapipe==0.10.33
+opencv-contrib-python==4.5.5.64
+numpy==1.26.4
